@@ -108,4 +108,13 @@ def test_qualifies_for_free_shipping_negative_total_raises_value_error():
     with pytest.raises(ValueError, match="cannot be negative"):
         qualifies_for_free_shipping(-10.0)
 
+def test_qualifies_for_free_shipping_non_numeric_raises_type_error():
+    """Non-numeric totals must be rejected with TypeError."""
+    with pytest.raises(TypeError, match="must be a number"):
+        qualifies_for_free_shipping("fifty")  # type: ignore
 
+
+def test_qualifies_for_free_shipping_boolean_raises_type_error():
+    """Boolean inputs must be rejected with TypeError."""
+    with pytest.raises(TypeError, match="must be a number"):
+        qualifies_for_free_shipping(True)  # type: ignore
