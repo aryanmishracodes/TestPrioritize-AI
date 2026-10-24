@@ -263,3 +263,9 @@ def test_pipeline_passes_external_evidence_into_ranking(mock_dep_intel, mock_map
         summary="Breaking evidence found"
     )
 
+    result = run_pipeline("main~1", "main", enable_tinyfish=True, execute_tests=False)
+    assert result.status == STATUS_SUCCESS
+    ranked = result.ranking_result.ranked_tests[0]
+    # Direct match (50) + Dependency risk (20) = 70
+    assert ranked.score == 70
+    assert "External dependency risk" in ranked.explanation
