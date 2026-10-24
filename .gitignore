@@ -60,3 +60,6 @@ credentials.json
 *.swo
 *~
 .DS_Store
+
+# Demo benchmark repository
+demo_repo/

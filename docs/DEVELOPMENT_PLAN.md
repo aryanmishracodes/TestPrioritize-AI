@@ -75,5 +75,34 @@ The system operates as a four-stage pipeline:
   - Returns structured `PipelineResult` containing changes, candidate mappings, dependency findings, rankings, and execution outcomes.
 - Unit tests implemented in `tests/test_pipeline.py` (11 passing tests with mocked subprocess).
 
-### Milestone 7: Regression Benchmark & Demonstration
-- Build an isolated benchmark repository demonstrating time-to-first-failure reduction compared to default test execution order.
+### Milestone 7: Streamlit Interactive Dashboard (Completed)
+- Implemented comprehensive, production-grade developer UI in `app.py`:
+  - **Header & Readiness**: Tagline "Run the right tests first." with live environment checks (TinyFish key status, Git availability).
+  - **Repository & Git Controls**: Sidebar inputs for repository path, base/target revisions with guidance for selecting local commits, timeout sliders, TinyFish toggles, and pytest execution settings.
+  - **Run Orchestration**: "Analyze and Prioritize Tests" button invoking `pipeline.run_pipeline` with session state caching to prevent spurious reruns.
+  - **Results Metrics**: 5 executive summary metric cards (Changed files, Prioritized tests, Executed & Passed tests, Execution duration, TinyFish status).
+  - **Changed Files Panel**: Clean table with relative paths, change types (added, modified, deleted), and rename tracking.
+  - **Prioritized Tests Table**: Visual badges for rank (`#1`, `#2`), priority tier (`HIGH`, `MEDIUM`, `LOW`), computed score `[0, 100]`, contributing source files, and detailed rationale breakdown.
+  - **TinyFish Intelligence Showcase**: Dedicated high-visibility panel displaying manifest diffs, queried package names, evidence categories (`breaking_change`, `migration_guide`, `release_notes`), verified source URLs, snippets, and explanation of the `+20` points risk score bonus.
+  - **Pytest Output Viewer**: Collapsible real-time execution logs with stdout, stderr, execution duration, and exit codes.
+  - **Transparency & Documentation**: Embedded architectural guide explaining lexical mapping, deterministic scoring, and real-world limitations.
+- Verified dashboard accessibility, session state persistence, and error resilience via unit tests in `tests/test_app.py` and live browser testing.
+
+### Milestone 8: Interactive Demo Scenarios & Fair Benchmark Suite (Completed)
+- **Isolated Demo Repository (`setup_demo_repo.py`)**:
+  - Initialized isolated sample repository under `demo_repo/` with clean commit history, domain modules (`cart.py`, `checkout.py`, `pricing.py`, `user_service.py`), and 31 unit tests.
+  - Configured 4 reproducible scenarios with authentic Git tags (`base`, `cart-enhancement`, `checkout-regression`, `bulk-pricing`, `dep-upgrade`).
+  - Implemented an **authentic failing regression demonstration**: integer truncation in `src/checkout.py` legitimately detected by `tests/test_checkout.py::test_apply_tax_fractional_precision` via fail-fast execution.
+- **Fair Side-by-Side Benchmark Engine (`benchmark_runner.py`)**:
+  - Evaluates prioritized test subset vs. entire test suite against the exact same commit and environment.
+  - Measures change detection time, AST mapping time, deterministic ranking time, and pytest execution durations.
+  - Parses structured JUnit XML to capture per-test timings, exit codes, and exact time-to-first-failure.
+  - Supports multiple iterations with warm-up runs, reporting median durations to eliminate OS caching noise.
+- **Dashboard Redesign for Judge Workflow (`app.py`)**:
+  - Added dedicated **Interactive Demo Scenarios** mode preselecting scenarios without typing commit hashes.
+  - Added live `git diff` preview expander with syntax highlighting.
+  - Replaced pyarrow/pandas-dependent UI tables with native Markdown tables to prevent host environment version conflicts.
+  - Added dedicated **Full-Suite Benchmark** tab with side-by-side comparison tables and honest interpretation guidelines.
+- **Automated QA & Verification (`tests/test_demo_and_benchmark.py`)**:
+  - Added 8 focused integration tests covering scenario definitions, authentic regression detection, JUnit XML parsing, and benchmark metrics.
+  - Total test suite expanded to 108 passing tests with 0 failures and 0 warnings.

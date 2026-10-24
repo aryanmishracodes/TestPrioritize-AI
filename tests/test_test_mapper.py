@@ -219,3 +219,192 @@ def test_map_changed_sources_to_tests_orchestrator(tmp_path):
 
     # unknown_module.py has no corresponding test
     assert results[3].has_matches is False
+
+
+# ============================================================================
+# AST Import Extraction & Analysis Tests
+# ============================================================================
+
+
+def test_extract_ast_imports_direct_and_from_imports(tmp_path):
+    """AST import extraction correctly parses direct imports, from imports, and member aliases."""
+    from test_mapper import extract_ast_imports
+
+    code = """
+import os
+import sys
+import src.cart as cart_mod
+from src.checkout import apply_discount, FREE_SHIPPING_THRESHOLD
+from src import pricing
+"""
+    f_path = tmp_path / "sample.py"
+    f_path.write_text(code, encoding="utf-8")
+
+    imports = extract_ast_imports(str(f_path), repo_path=str(tmp_path))
+    assert "os" in imports
+    assert "sys" in imports
+    assert "src.cart" in imports
+    assert "cart" in imports  # leaf module
+    assert "src.checkout" in imports
+    assert "checkout" in imports  # leaf module
+    assert "src.checkout.apply_discount" in imports
+    assert "src.pricing" in imports
+    assert "pricing" in imports
+
+
+def test_extract_ast_imports_relative_imports(tmp_path):
+    """AST import extraction handles relative package imports."""
+    from test_mapper import extract_ast_imports
+
+    pkg_dir = tmp_path / "src" / "sub"
+    pkg_dir.mkdir(parents=True)
+    code = """
+from . import helper
+from .. import cart
+"""
+    f_path = pkg_dir / "worker.py"
+    f_path.write_text(code, encoding="utf-8")
+
+    imports = extract_ast_imports(str(f_path), repo_path=str(tmp_path))
+    assert len(imports) > 0
+
+
+def test_extract_ast_imports_syntax_error_handled_gracefully(tmp_path):
+    """Files with broken syntax must return an empty set without raising exceptions."""
+    from test_mapper import extract_ast_imports
+
+    broken_code = "def broken_syntax( { this is invalid python"
+    f_path = tmp_path / "broken.py"
+    f_path.write_text(broken_code, encoding="utf-8")
+
+    imports = extract_ast_imports(str(f_path), repo_path=str(tmp_path))
+    assert imports == set()
+
+
+def test_extract_ast_imports_missing_file_handled_gracefully(tmp_path):
+    """Non-existent file paths return empty sets without crashing."""
+    from test_mapper import extract_ast_imports
+
+    missing = str(tmp_path / "non_existent_file.py")
+    assert extract_ast_imports(missing) == set()
+
+
+def test_map_source_to_tests_ast_differently_named_test(tmp_path):
+    """
+    CRITICAL AST TEST:
+    A test file named 'tests/test_billing_workflow.py' does NOT lexically match 'src/checkout.py'.
+    However, because it contains 'from src.checkout import apply_discount',
+    AST analysis correctly maps 'src/checkout.py' to it with 'direct' confidence!
+    """
+    repo = tmp_path
+    src_dir = repo / "src"
+    test_dir = repo / "tests"
+    src_dir.mkdir()
+    test_dir.mkdir()
+
+    (src_dir / "checkout.py").write_text("def apply_discount(t, p): return t", encoding="utf-8")
+    test_file = test_dir / "test_billing_workflow.py"
+    test_file.write_text("""
+import pytest
+from src.checkout import apply_discount
+
+def test_billing():
+    assert apply_discount(100, 10) == 100
+""", encoding="utf-8")
+
+    result = map_source_to_tests(
+        source_file="src/checkout.py",
+        candidate_test_files=["tests/test_billing_workflow.py"],
+        repo_path=str(repo)
+    )
+
+    assert result.has_matches is True
+    assert len(result.matches) == 1
+    match = result.matches[0]
+    assert match.test_file == "tests/test_billing_workflow.py"
+    assert match.confidence == "direct"
+    assert "AST import match" in match.reason
+
+
+def test_map_source_to_tests_unrelated_modules_not_matched(tmp_path):
+    """A test importing unrelated libraries (pytest, requests, cart) must NOT match checkout.py."""
+    repo = tmp_path
+    src_dir = repo / "src"
+    test_dir = repo / "tests"
+    src_dir.mkdir()
+    test_dir.mkdir()
+
+    (src_dir / "checkout.py").write_text("def checkout(): pass", encoding="utf-8")
+    (src_dir / "cart.py").write_text("def cart(): pass", encoding="utf-8")
+    test_file = test_dir / "test_unrelated.py"
+    test_file.write_text("""
+import pytest
+import os
+from src.cart import cart
+""", encoding="utf-8")
+
+    result = map_source_to_tests(
+        source_file="src/checkout.py",
+        candidate_test_files=["tests/test_unrelated.py"],
+        repo_path=str(repo)
+    )
+
+    assert result.has_matches is False
+    assert result.matches == []
+
+
+def test_map_source_to_tests_lexical_fallback_when_syntax_error(tmp_path):
+    """When a test file has a syntax error, lexical matching serves as the robust fallback."""
+    repo = tmp_path
+    test_dir = repo / "tests"
+    test_dir.mkdir()
+
+    # Syntax error in test file
+    (test_dir / "test_cart.py").write_text("def syntax_error( {", encoding="utf-8")
+
+    result = map_source_to_tests(
+        source_file="src/cart.py",
+        candidate_test_files=["tests/test_cart.py"],
+        repo_path=str(repo)
+    )
+
+    # Lexical fallback succeeds even though AST parsing failed
+    assert result.has_matches is True
+    assert result.matches[0].test_file == "tests/test_cart.py"
+    assert result.matches[0].confidence == "direct"
+    assert "Exact module stem match" in result.matches[0].reason
+
+
+def test_transitive_ast_dependency_mapping(tmp_path):
+    """
+    When src/payment.py imports src/checkout.py, and src/checkout.py changes:
+    test_payment.py is discovered as a candidate test via transitive AST dependency.
+    """
+    repo = tmp_path
+    src_dir = repo / "src"
+    test_dir = repo / "tests"
+    src_dir.mkdir()
+    test_dir.mkdir()
+
+    (src_dir / "checkout.py").write_text("def process(): pass", encoding="utf-8")
+    (src_dir / "payment.py").write_text("""
+from src.checkout import process
+def pay(): process()
+""", encoding="utf-8")
+
+    (test_dir / "test_payment.py").write_text("""
+from src.payment import pay
+def test_pay(): pay()
+""", encoding="utf-8")
+
+    result = map_source_to_tests(
+        source_file="src/checkout.py",
+        candidate_test_files=["tests/test_payment.py"],
+        repo_path=str(repo)
+    )
+
+    assert result.has_matches is True
+    match = result.matches[0]
+    assert match.test_file == "tests/test_payment.py"
+    assert match.confidence == "compound"
+    assert "AST dependency match" in match.reason

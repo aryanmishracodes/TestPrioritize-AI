@@ -3,3 +3,6 @@ pytest>=7.4.0
 
 # HTTP client for external intelligence queries
 requests>=2.31.0
+
+# Interactive web dashboard
+streamlit>=1.28.0
