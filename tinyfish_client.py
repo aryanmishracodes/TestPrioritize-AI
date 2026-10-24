@@ -73,6 +73,13 @@ def get_api_key(explicit_key: Optional[str] = None) -> Optional[str]:
         candidate = explicit_key.strip()
     else:
         candidate = os.getenv("TINYFISH_API_KEY", "").strip()
+        if not candidate or candidate == "your_tinyfish_api_key_here":
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(override=True)
+                candidate = os.getenv("TINYFISH_API_KEY", "").strip()
+            except Exception:
+                pass
 
     if not candidate or candidate == "your_tinyfish_api_key_here":
         return None

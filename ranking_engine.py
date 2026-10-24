@@ -230,9 +230,15 @@ def rank_tests(
         elif has_compound:
             base_score = SCORE_COMPOUND_MATCH
             compound_sources = [m.source_file for m in matches if m.confidence == "compound"]
-            reasons.append(
-                f"Compound match from source: {', '.join(compound_sources)} (+{SCORE_COMPOUND_MATCH} pts)"
-            )
+            dep_evidence = [m.reason for m in matches if m.confidence == "compound" and m.reason and ("dependency" in m.reason.lower())]
+            if dep_evidence:
+                reasons.append(
+                    f"Compound match from source: {', '.join(compound_sources)} (+{SCORE_COMPOUND_MATCH} pts) [{dep_evidence[0]}]"
+                )
+            else:
+                reasons.append(
+                    f"Compound match from source: {', '.join(compound_sources)} (+{SCORE_COMPOUND_MATCH} pts)"
+                )
         else:
             base_score = 0
             unsupported = [m.confidence for m in matches]

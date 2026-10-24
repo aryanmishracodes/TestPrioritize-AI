@@ -408,3 +408,242 @@ def test_pay(): pay()
     assert match.test_file == "tests/test_payment.py"
     assert match.confidence == "compound"
     assert "AST dependency match" in match.reason
+
+
+# ============================================================================
+# Upstream & Bidirectional Dependency-Aware Mapping Tests
+# ============================================================================
+
+
+def test_judge_scenario_upstream_dependency_mapping(tmp_path):
+    """
+    Exact judge scenario:
+    src/checkout.py imports src.cart.calculate_total.
+    tests/test_checkout.py imports checkout.
+    tests/test_cart.py imports cart.
+    When only src/checkout.py changes:
+    Both tests/test_checkout.py and tests/test_cart.py must be candidates.
+    test_checkout.py has direct confidence; test_cart.py has dependency match evidence.
+    """
+    from test_mapper import find_imported_source_files
+    from ranking_engine import rank_tests
+
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+
+    (src / "__init__.py").write_text("", encoding="utf-8")
+    (src / "checkout.py").write_text("""
+from src.cart import calculate_total
+
+def checkout(items):
+    return calculate_total(items)
+""", encoding="utf-8")
+
+    (src / "cart.py").write_text("""
+def calculate_total(items):
+    return sum(items)
+""", encoding="utf-8")
+
+    (tests / "test_checkout.py").write_text("""
+from src.checkout import checkout
+
+def test_checkout():
+    assert checkout([10, 20]) == 30
+""", encoding="utf-8")
+
+    (tests / "test_cart.py").write_text("""
+from src.cart import calculate_total
+
+def test_cart():
+    assert calculate_total([10, 20]) == 30
+""", encoding="utf-8")
+
+    # 1. find_imported_source_files directly
+    imported = find_imported_source_files("src/checkout.py", repo_path=str(tmp_path))
+    assert "src/cart.py" in imported
+
+    # 2. map_changed_sources_to_tests
+    results = map_changed_sources_to_tests(["src/checkout.py"], repo_path=str(tmp_path), test_dir="tests")
+    assert len(results) == 1
+    mapping_res = results[0]
+    assert mapping_res.has_matches is True
+
+    matched_tests = [m.test_file for m in mapping_res.matches]
+    assert "tests/test_checkout.py" in matched_tests
+    assert "tests/test_cart.py" in matched_tests
+
+    # Verify checkout match details
+    checkout_match = next(m for m in mapping_res.matches if m.test_file == "tests/test_checkout.py")
+    assert checkout_match.confidence == "direct"
+    assert "checkout" in checkout_match.reason
+
+    # Verify cart match details
+    cart_match = next(m for m in mapping_res.matches if m.test_file == "tests/test_cart.py")
+    assert cart_match.confidence == "compound"
+    assert "Dependency match: changed source 'src/checkout.py' imports 'src/cart.py'" in cart_match.reason
+    assert "test imports 'src/cart.py'" in cart_match.reason
+
+    # 3. Ranking evaluation
+    ranking = rank_tests(results)
+    assert ranking.total_candidates == 2
+    top = ranking.ranked_tests[0]
+    second = ranking.ranked_tests[1]
+
+    assert top.test_file == "tests/test_checkout.py"
+    assert top.score == 50
+    assert top.priority == "MEDIUM"
+
+    assert second.test_file == "tests/test_cart.py"
+    assert second.score == 25
+    assert second.priority == "LOW"
+
+
+def test_reverse_direction_downstream_dependency_mapping(tmp_path):
+    """
+    Reverse direction:
+    src/cart.py changes. src/checkout.py imports src/cart.py.
+    tests/test_cart.py (direct) and tests/test_checkout.py (downstream dependency) are candidates.
+    """
+    from ranking_engine import rank_tests
+
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+
+    (src / "cart.py").write_text("def calc(): pass", encoding="utf-8")
+    (src / "checkout.py").write_text("from src.cart import calc\ndef checkout(): calc()", encoding="utf-8")
+
+    (tests / "test_cart.py").write_text("from src.cart import calc\ndef test_cart(): pass", encoding="utf-8")
+    (tests / "test_checkout.py").write_text("from src.checkout import checkout\ndef test_checkout(): pass", encoding="utf-8")
+
+    results = map_changed_sources_to_tests(["src/cart.py"], repo_path=str(tmp_path), test_dir="tests")
+    mapping_res = results[0]
+    matched_tests = [m.test_file for m in mapping_res.matches]
+
+    assert "tests/test_cart.py" in matched_tests
+    assert "tests/test_checkout.py" in matched_tests
+
+    ranking = rank_tests(results)
+    assert ranking.ranked_tests[0].test_file == "tests/test_cart.py"
+    assert ranking.ranked_tests[0].score == 50
+    assert ranking.ranked_tests[1].test_file == "tests/test_checkout.py"
+    assert ranking.ranked_tests[1].score == 25
+
+
+def test_no_duplicate_candidate_paths(tmp_path):
+    """
+    A test file that qualifies through both direct stem and import or dependency
+    is deduplicated and retains its direct match confidence.
+    """
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+
+    (src / "cart.py").write_text("def calc(): pass", encoding="utf-8")
+    (tests / "test_cart.py").write_text("from src.cart import calc\ndef test_cart(): pass", encoding="utf-8")
+
+    results = map_changed_sources_to_tests(["src/cart.py"], repo_path=str(tmp_path), test_dir="tests")
+    matches = results[0].matches
+
+    # Exactly 1 match for test_cart.py
+    cart_matches = [m for m in matches if m.test_file == "tests/test_cart.py"]
+    assert len(cart_matches) == 1
+    assert cart_matches[0].confidence == "direct"
+
+
+def test_unrelated_tests_are_not_included(tmp_path):
+    """Unrelated test files are not added to candidate list when no dependency exists."""
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+
+    (src / "checkout.py").write_text("def checkout(): pass", encoding="utf-8")
+    (src / "users.py").write_text("def get_user(): pass", encoding="utf-8")
+
+    (tests / "test_checkout.py").write_text("from src.checkout import checkout\ndef test_co(): pass", encoding="utf-8")
+    (tests / "test_users.py").write_text("from src.users import get_user\ndef test_u(): pass", encoding="utf-8")
+
+    results = map_changed_sources_to_tests(["src/checkout.py"], repo_path=str(tmp_path), test_dir="tests")
+    matched_tests = [m.test_file for m in results[0].matches]
+
+    assert "tests/test_checkout.py" in matched_tests
+    assert "tests/test_users.py" not in matched_tests
+
+
+def test_circular_imports_handled_safely(tmp_path):
+    """Circular imports between source files do not cause infinite recursion."""
+    from test_mapper import find_imported_source_files
+
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+
+    # checkout imports cart, cart imports checkout
+    (src / "checkout.py").write_text("from src.cart import get_cart\ndef checkout(): pass", encoding="utf-8")
+    (src / "cart.py").write_text("from src.checkout import checkout\ndef get_cart(): pass", encoding="utf-8")
+
+    (tests / "test_checkout.py").write_text("from src.checkout import checkout\ndef test_checkout(): pass", encoding="utf-8")
+    (tests / "test_cart.py").write_text("from src.cart import get_cart\ndef test_cart(): pass", encoding="utf-8")
+
+    imported = find_imported_source_files("src/checkout.py", repo_path=str(tmp_path))
+    assert "src/cart.py" in imported
+    assert "src/checkout.py" not in imported
+
+    results = map_changed_sources_to_tests(["src/checkout.py"], repo_path=str(tmp_path), test_dir="tests")
+    assert len(results[0].matches) == 2
+
+
+def test_relative_package_imports(tmp_path):
+    """Relative imports within subpackages resolve properly to upstream dependencies."""
+    from test_mapper import find_imported_source_files
+
+    pkg = tmp_path / "pkg"
+    tests = tmp_path / "tests"
+    pkg.mkdir()
+    tests.mkdir()
+
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "core.py").write_text("def core_fn(): pass", encoding="utf-8")
+    (pkg / "utils.py").write_text("from .core import core_fn\ndef util(): core_fn()", encoding="utf-8")
+
+    (tests / "test_utils.py").write_text("from pkg.utils import util\ndef test_utils(): pass", encoding="utf-8")
+    (tests / "test_core.py").write_text("from pkg.core import core_fn\ndef test_core(): pass", encoding="utf-8")
+
+    imported = find_imported_source_files("pkg/utils.py", repo_path=str(tmp_path))
+    assert "pkg/core.py" in imported
+
+    results = map_changed_sources_to_tests(["pkg/utils.py"], repo_path=str(tmp_path), test_dir="tests")
+    matched = [m.test_file for m in results[0].matches]
+    assert "tests/test_utils.py" in matched
+    assert "tests/test_core.py" in matched
+
+
+def test_malformed_syntax_and_missing_imports_handled_gracefully(tmp_path):
+    """Files with broken syntax or unresolvable imports do not crash discovery or mapping."""
+    from test_mapper import find_imported_source_files
+
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+
+    # Syntax error in changed source
+    (src / "broken.py").write_text("def broken(: syntax error", encoding="utf-8")
+    # File importing non-existent module
+    (src / "missing.py").write_text("import nonexistent_library_xyz\nfrom non_existent_pkg import foo", encoding="utf-8")
+
+    assert find_imported_source_files("src/broken.py", repo_path=str(tmp_path)) == set()
+    assert find_imported_source_files("src/missing.py", repo_path=str(tmp_path)) == set()
+    assert find_imported_source_files("src/does_not_exist.py", repo_path=str(tmp_path)) == set()
+
+    results = map_changed_sources_to_tests(["src/broken.py", "src/missing.py"], repo_path=str(tmp_path), test_dir="tests")
+    assert len(results) == 2
+    assert results[0].matches == []
+    assert results[1].matches == []
+

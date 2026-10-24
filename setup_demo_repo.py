@@ -624,10 +624,11 @@ requests==3.0.0
         "scenarios": scenarios
     }
 
-    if __name__ == "__main__":
-        print(f"Initializing demo repository in: {DEMO_DIR}")
-        info = init_demo_repository()
-        print("Demo repository initialized successfully!")
-        print(f"Base commit: {info['base_commit'][:7]}")
-        print(f"Created {len(info['scenarios'])} reproducible scenarios.")
+
+if __name__ == "__main__":
+    print(f"Initializing demo repository in: {DEMO_DIR}")
+    info = init_demo_repository()
+    print("Demo repository initialized successfully!")
+    print(f"Base commit: {info['base_commit'][:7]}")
+    print(f"Created {len(info['scenarios'])} reproducible scenarios.")
 

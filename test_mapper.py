@@ -269,7 +269,7 @@ def find_dependent_source_files(
         for root, _, files in os.walk(s_dir):
             # Avoid test directories and caches
             rel_dir = normalize_path(os.path.relpath(root, norm_repo))
-            if any(p in ("tests", "test", ".venv", "venv", ".git", "build", "dist", "demo_repo") for p in rel_dir.split("/")):
+            if any(p in ("tests", "test", ".venv", "venv", ".git", "build", "dist", "demo_repo", "demo_repos") for p in rel_dir.split("/")):
                 continue
 
             for file in files:
@@ -287,6 +287,127 @@ def find_dependent_source_files(
                     dependents.add(rel_path)
 
     return dependents
+
+
+def find_imported_source_files(
+    source_file: str,
+    repo_path: str = "."
+) -> Set[str]:
+    """
+    Parses a source file with AST and identifies local project source files
+    that are statically imported by it (upstream dependencies).
+
+    Handles:
+    - import module
+    - from module import member (member can be a submodule or an exported function/class)
+    - relative imports (from . import module, from .module import member)
+    - package-qualified imports (from src.cart import calculate_total)
+
+    Ignores:
+    - Standard library and third-party packages not in repo_path
+    - Unparseable files or syntax errors
+    - Test files
+    - The source file itself (self-imports or circular references)
+
+    Returns:
+        Set of normalized relative paths to discovered local source files.
+    """
+    norm_repo = os.path.abspath(repo_path)
+    norm_source = normalize_path(source_file)
+    full_source_path = norm_source if os.path.isabs(norm_source) else os.path.join(norm_repo, norm_source)
+
+    if not os.path.isfile(full_source_path):
+        return set()
+
+    try:
+        with open(full_source_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        tree = ast.parse(content, filename=full_source_path)
+    except (SyntaxError, UnicodeDecodeError, OSError, ValueError):
+        return set()
+
+    source_dir = os.path.dirname(norm_source)
+    imported_sources: Set[str] = set()
+
+    def resolve_candidate(cand_mod: str, base_dir: str = "") -> Optional[str]:
+        if not cand_mod:
+            return None
+        cand_rel = cand_mod.replace(".", "/")
+        
+        locations_to_check: List[str] = []
+        if base_dir:
+            locations_to_check.append(normalize_path(os.path.join(base_dir, cand_rel)))
+        locations_to_check.append(normalize_path(cand_rel))
+        if not cand_rel.startswith("src/") and not base_dir.startswith("src"):
+            locations_to_check.append(normalize_path(os.path.join("src", cand_rel)))
+
+        for loc in locations_to_check:
+            # Check loc as a .py file
+            py_file = loc + ".py"
+            full_py = os.path.abspath(os.path.join(norm_repo, py_file))
+            if full_py.startswith(norm_repo) and os.path.isfile(full_py):
+                rel = normalize_path(os.path.relpath(full_py, norm_repo))
+                if not is_test_file(rel) and rel != norm_source and os.path.basename(rel) != "__init__.py":
+                    return rel
+
+            # Check loc as a package directory with __init__.py
+            init_file = loc + "/__init__.py"
+            full_init = os.path.abspath(os.path.join(norm_repo, init_file))
+            if full_init.startswith(norm_repo) and os.path.isfile(full_init):
+                rel = normalize_path(os.path.relpath(full_init, norm_repo))
+                if not is_test_file(rel) and rel != norm_source and os.path.basename(rel) != "__init__.py":
+                    return rel
+
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.name
+                resolved = resolve_candidate(name, source_dir)
+                if resolved:
+                    imported_sources.add(resolved)
+                else:
+                    parts = name.split(".")
+                    while len(parts) > 1:
+                        parts.pop()
+                        resolved = resolve_candidate(".".join(parts), source_dir)
+                        if resolved:
+                            imported_sources.add(resolved)
+                            break
+
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            level = node.level
+
+            curr_dir = source_dir
+            if level > 0:
+                parts = source_dir.split("/") if source_dir else []
+                pop_count = level - 1
+                if pop_count > 0:
+                    parts = parts[:max(0, len(parts) - pop_count)]
+                curr_dir = "/".join(parts)
+
+            if mod:
+                resolved = resolve_candidate(mod, curr_dir)
+                if resolved:
+                    imported_sources.add(resolved)
+                else:
+                    parts = mod.split(".")
+                    while len(parts) > 1:
+                        parts.pop()
+                        resolved = resolve_candidate(".".join(parts), curr_dir)
+                        if resolved:
+                            imported_sources.add(resolved)
+                            break
+
+            for alias in node.names:
+                combined = f"{mod}.{alias.name}" if mod else alias.name
+                resolved = resolve_candidate(combined, curr_dir)
+                if resolved:
+                    imported_sources.add(resolved)
+
+    return imported_sources
 
 
 # ============================================================================
@@ -352,7 +473,8 @@ def map_source_to_tests(
        b. Test core name exactly matches source module stem (e.g. src/cart.py -> tests/test_cart.py).
     4. Compound Delimited Match (Secondary Confidence - compound):
        a. Test core name contains source stem bounded by underscores (e.g. tests/test_cart_integration.py).
-       b. Transitive dependency: another source file imports source_file, and test imports that source file.
+       b. Transitive downstream dependency: another source file imports source_file, and test imports that source file.
+       c. Transitive upstream dependency: source_file imports another local source file, and test imports or targets that dependency.
 
     Args:
         source_file: Path to the source file.
@@ -376,8 +498,10 @@ def map_source_to_tests(
     matches: List[MappingMatch] = []
     matched_test_paths: Set[str] = set()
 
-    # Precompute transitive dependent source files (e.g. checkout imports cart)
+    # Precompute transitive dependent source files (downstream: who imports source_file)
     dependent_sources = find_dependent_source_files(norm_source, repo_path=repo_path)
+    # Precompute upstream imported source files (upstream: what source_file imports)
+    imported_sources = find_imported_source_files(norm_source, repo_path=repo_path)
 
     for test_path in candidate_test_files:
         norm_test = normalize_path(test_path)
@@ -434,9 +558,9 @@ def map_source_to_tests(
             matched_test_paths.add(norm_test)
             continue
 
-        # 4. Transitive AST Dependency Match
+        # 4. Transitive AST Downstream Dependency Match
         if dependent_sources:
-            for dep_src in dependent_sources:
+            for dep_src in sorted(list(dependent_sources)):
                 if does_test_import_source(norm_test, dep_src, repo_path=repo_path):
                     dep_stem = extract_module_stem(dep_src) or os.path.basename(dep_src)
                     matches.append(
@@ -444,6 +568,36 @@ def map_source_to_tests(
                             source_file=norm_source,
                             test_file=norm_test,
                             reason=f"AST dependency match: '{dep_stem}' imports '{stem}', and '{os.path.basename(norm_test)}' imports '{dep_stem}'",
+                            confidence="compound"
+                        )
+                    )
+                    matched_test_paths.add(norm_test)
+                    break
+
+        # 5. Upstream AST Dependency Match (changed source imports local module, test tests that module)
+        if norm_test not in matched_test_paths and imported_sources:
+            for imp_src in sorted(list(imported_sources)):
+                imp_stem = extract_module_stem(imp_src)
+                test_imports_imp = does_test_import_source(norm_test, imp_src, repo_path=repo_path)
+                test_stem_matches_imp = (core_test_name == imp_stem) if (core_test_name and imp_stem) else False
+                test_compound_matches_imp = False
+                if core_test_name and imp_stem:
+                    test_compound_matches_imp = (
+                        core_test_name.startswith(f"{imp_stem}_") or
+                        core_test_name.endswith(f"_{imp_stem}") or
+                        f"_{imp_stem}_" in core_test_name
+                    )
+
+                if test_imports_imp or test_stem_matches_imp or test_compound_matches_imp:
+                    if test_imports_imp:
+                        reason = f"Dependency match: changed source '{norm_source}' imports '{imp_src}'; test imports '{imp_src}'."
+                    else:
+                        reason = f"Dependency match: changed source '{norm_source}' imports '{imp_src}'; test matches '{imp_src}'."
+                    matches.append(
+                        MappingMatch(
+                            source_file=norm_source,
+                            test_file=norm_test,
+                            reason=reason,
                             confidence="compound"
                         )
                     )
