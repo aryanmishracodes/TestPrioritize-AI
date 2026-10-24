@@ -82,5 +82,16 @@ def test_calculate_cart_total_non_list_input_raises_type_error():
     with pytest.raises(TypeError, match="must be provided as a list"):
         calculate_cart_total("invalid_cart_string")  # type: ignore
 
+def test_calculate_cart_total_non_dict_item_raises_type_error():
+    """Passing non-dictionary items inside the cart must raise TypeError."""
+    items = ["not_a_dictionary_item"]  # type: ignore
+    with pytest.raises(TypeError, match="must be a dictionary"):
+        calculate_cart_total(items)
 
+
+def test_calculate_cart_total_non_numeric_price_raises_type_error():
+    """Providing a non-numeric price string must raise TypeError."""
+    items = [{"name": "Item", "price": "10.00", "quantity": 1}]
+    with pytest.raises(TypeError, match="must be a number"):
+        calculate_cart_total(items)
 
