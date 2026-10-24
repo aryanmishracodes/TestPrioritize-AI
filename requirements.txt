@@ -1,0 +1,5 @@
+# Testing framework
+pytest>=7.4.0
+
+# HTTP client for external intelligence queries
+requests>=2.31.0
