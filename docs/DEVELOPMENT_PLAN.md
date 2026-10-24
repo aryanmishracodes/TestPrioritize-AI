@@ -29,11 +29,21 @@ The system operates as a four-stage pipeline:
 - Conservatively map tests to source files (e.g., name-based match, import match).
 - Add unit tests for AST discovery and mapping.
 
-### Milestone 4: Dependency Change & Risk Intelligence
-- Detect version changes in dependency manifests (e.g., package `X` upgraded from `v1.0.0` to `v2.0.0`).
-- Implement external search client to query dependency intelligence (e.g., TinyFish search) with graceful fallback and offline handling.
-- Classify findings into breaking changes, migration guides, and release notes.
-- Add unit tests for dependency intelligence and error handling.
+### Milestone 4: Dependency Change & Risk Intelligence (TinyFish Integration Completed)
+- Implemented official TinyFish Search REST API client in `tinyfish_client.py`:
+  - Authentication via `X-API-Key` header loaded safely from `TINYFISH_API_KEY`.
+  - Structured result extraction (`title`, `url`, `snippet`, `site_name`, `position`).
+  - Strict URL validation, timeout controls, and graceful error handling (`missing_key`, `timeout`, `http_error`, `invalid_json`).
+- Implemented `dependency_intelligence.py`:
+  - Detects manifest modifications in `requirements.txt`.
+  - Computes version deltas (added, modified, removed packages) between Git revisions.
+  - Builds targeted search queries for official release notes and breaking changes.
+  - Categorizes evidence into `breaking_change`, `migration_guide`, `release_notes`, and `general_advisory`.
+  - Discards unverified items where package name is absent.
+- Integrated external findings into `ranking_engine.py`:
+  - Verified breaking changes for an upgraded package add `+20` points (`SCORE_DEPENDENCY_RISK`) only to candidate tests that connect to that package.
+  - Preserves 100% of local deterministic ranking when TinyFish is disabled or returns no relevant evidence.
+- Full test coverage in `tests/test_tinyfish.py` (18 passing tests with mocked network).
 
 ### Milestone 5: Deterministic Prioritization Engine (Completed)
 - Standalone, explainable scoring engine implemented in `ranking_engine.py`:
@@ -56,10 +66,14 @@ The system operates as a four-stage pipeline:
     - Generates human-readable breakdown matching the actual contributing signals.
 - Unit tests implemented in `tests/test_ranking_engine.py` (12 passing tests).
 
-### Milestone 6: CLI Runner & Test Suite Integration
-- Implement CLI tool (`run_prioritized.py`) supporting:
-  - Dry-run / preview mode (showing ranking and rationale without running tests).
-  - Execution mode (invoking pytest with fail-fast `-x` flag in prioritized order).
+### Milestone 6: Pipeline Orchestration & Test Suite Integration (Completed)
+- Implemented unified pipeline orchestrator in `pipeline.py`:
+  - Coordinates `diff_checker.py`, `test_mapper.py`, `dependency_intelligence.py`, and `ranking_engine.py`.
+  - Safely invokes `pytest` via `subprocess` with argument lists (`shell=False`) and timeout protections.
+  - Supports fail-fast execution (`-x`) and parses actual pass/fail counts and durations without fabricating results.
+  - Provides graceful fallbacks when TinyFish is disabled or unavailable.
+  - Returns structured `PipelineResult` containing changes, candidate mappings, dependency findings, rankings, and execution outcomes.
+- Unit tests implemented in `tests/test_pipeline.py` (11 passing tests with mocked subprocess).
 
 ### Milestone 7: Regression Benchmark & Demonstration
 - Build an isolated benchmark repository demonstrating time-to-first-failure reduction compared to default test execution order.

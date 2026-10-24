@@ -47,6 +47,7 @@ coverage.xml
 # Environment files and credentials
 .env
 .env.*
+!.env.example
 *.secret
 *.key
 *.pem

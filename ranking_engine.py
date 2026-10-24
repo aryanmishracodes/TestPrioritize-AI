@@ -24,6 +24,9 @@ SCORE_MAX: int = 100
 SCORE_DIRECT_MATCH: int = 50     # Exact module stem match (e.g. cart.py -> test_cart.py)
 SCORE_COMPOUND_MATCH: int = 25   # Delimited compound match (e.g. cart.py -> test_cart_integration.py)
 
+# External dependency risk weight (TinyFish intelligence)
+SCORE_DEPENDENCY_RISK: int = 20  # Verified breaking changes/migration guide for an upgraded dependency
+
 # Additional evidence: multiple distinct changed source files pointing to the same test
 SCORE_ADDITIONAL_SOURCE: int = 15
 MAX_ADDITIONAL_SOURCE_BONUS: int = 30  # At most 2 additional sources grant bonus points
@@ -69,10 +72,12 @@ class RankingResult:
         ranked_tests: Deterministically ordered list of RankedItem objects.
         total_candidates: Number of unique candidate test files ranked.
         summary: Overview summary of the ranking operation.
+        dependency_report: Optional DependencyIntelligenceReport from TinyFish analysis.
     """
     ranked_tests: List[RankedItem] = field(default_factory=list)
     total_candidates: int = 0
     summary: str = ""
+    dependency_report: Optional[Any] = None
 
     @property
     def test_paths(self) -> List[str]:
@@ -111,10 +116,12 @@ def _extract_all_matches(
 
 
 def rank_tests(
-    mapping_results: Union[List[SourceMappingResult], List[MappingMatch]]
+    mapping_results: Union[List[SourceMappingResult], List[MappingMatch]],
+    dependency_report: Optional[Any] = None
 ) -> RankingResult:
     """
-    Ranks candidate test files based on evidence provided by test_mapper.
+    Ranks candidate test files based on evidence provided by test_mapper and
+    optional external dependency intelligence from TinyFish.
 
     Scoring Logic:
     1. Base Score:
@@ -125,16 +132,20 @@ def rank_tests(
     2. Multi-Source Bonus:
        - If multiple distinct changed source files map to the same test, each
          additional source adds +15 points (capped at +30 points).
-    3. Clamping & Priority Tier:
+    3. External Dependency Risk Bonus (TinyFish):
+       - If an upgraded dependency has verified breaking change/migration intelligence,
+         and a candidate test or its mapped source touches that package, adds +20 points.
+    4. Clamping & Priority Tier:
        - Final score clamped to [0, 100].
        - HIGH: score >= 70
        - MEDIUM: 40 <= score < 70
        - LOW: score < 40
-    4. Deterministic Tie-Breaking:
+    5. Deterministic Tie-Breaking:
        - Sorted by score DESCENDING, then by test_file ASCENDING (alphabetical).
 
     Args:
         mapping_results: List of SourceMappingResult or MappingMatch objects.
+        dependency_report: Optional DependencyIntelligenceReport containing verified findings.
 
     Returns:
         RankingResult containing deterministically ordered RankedItem entries.
@@ -153,7 +164,8 @@ def rank_tests(
         return RankingResult(
             ranked_tests=[],
             total_candidates=0,
-            summary="No candidate test mappings found to rank."
+            summary="No candidate test mappings found to rank.",
+            dependency_report=dependency_report
         )
 
     # Group matches by normalized test file path
@@ -190,8 +202,14 @@ def rank_tests(
         return RankingResult(
             ranked_tests=[],
             total_candidates=0,
-            summary="No valid candidate test files after normalizing inputs."
+            summary="No valid candidate test files after normalizing inputs.",
+            dependency_report=dependency_report
         )
+
+    # Extract risky packages from dependency report if available
+    risky_packages: Set[str] = set()
+    if dependency_report and getattr(dependency_report, "has_breaking_evidence", False):
+        risky_packages = getattr(dependency_report, "risky_packages", set())
 
     ranked_items: List[RankedItem] = []
 
@@ -239,7 +257,25 @@ def rank_tests(
                     f"(+{source_bonus} pts)"
                 )
 
-        raw_score = base_score + source_bonus
+        # Evaluate external dependency risk bonus (TinyFish)
+        dep_bonus = 0
+        if risky_packages:
+            matched_risky_pkgs: List[str] = []
+            targets_to_check = [test_path] + distinct_sources
+            for pkg in sorted(list(risky_packages)):
+                clean_pkg = pkg.lower().replace("-", "_")
+                tokens = {clean_pkg, clean_pkg.replace("_", "-")}
+                if any(any(tok in t.lower() for tok in tokens) for t in targets_to_check):
+                    matched_risky_pkgs.append(pkg)
+
+            if matched_risky_pkgs:
+                dep_bonus = SCORE_DEPENDENCY_RISK
+                reasons.append(
+                    f"External dependency risk: verified breaking changes in upgraded package(s): "
+                    f"{', '.join(matched_risky_pkgs)} (+{SCORE_DEPENDENCY_RISK} pts)"
+                )
+
+        raw_score = base_score + source_bonus + dep_bonus
         final_score = max(SCORE_MIN, min(SCORE_MAX, raw_score))
         priority = determine_priority_label(final_score)
 
@@ -270,5 +306,6 @@ def rank_tests(
     return RankingResult(
         ranked_tests=ranked_items,
         total_candidates=len(ranked_items),
-        summary=summary
+        summary=summary,
+        dependency_report=dependency_report
     )
