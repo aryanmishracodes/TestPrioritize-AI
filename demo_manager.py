@@ -153,8 +153,18 @@ def get_all_demo_repos() -> List[DemoRepoInfo]:
     """
     Discovers all 4 demo repositories under demo_repos/ and returns their descriptors.
     """
-    if not os.path.exists(DEMO_REPOS_ROOT):
-        # Auto-initialize if needed
+    # Auto-initialize demo repos if missing or unpopulated (e.g. fresh cloud deployment)
+    needs_setup = not os.path.exists(DEMO_REPOS_ROOT)
+    if not needs_setup:
+        for rid in ("ecommerce", "auth_service", "payment_gateway", "booking_platform"):
+            rpath = os.path.join(DEMO_REPOS_ROOT, rid)
+            test_dir = os.path.join(rpath, "tests")
+            git_dir = os.path.join(rpath, ".git")
+            if not os.path.isdir(rpath) or not os.path.isdir(test_dir) or not os.path.exists(git_dir):
+                needs_setup = True
+                break
+
+    if needs_setup:
         try:
             from setup_all_demo_repos import setup_all
             setup_all(DEMO_REPOS_ROOT)
