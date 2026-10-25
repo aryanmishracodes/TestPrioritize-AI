@@ -14,6 +14,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from ast_bfs import bfs_walk, collect_nodes_bfs
+
 
 @dataclass(frozen=True)
 class MappingMatch:

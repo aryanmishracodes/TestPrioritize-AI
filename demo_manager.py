@@ -166,10 +166,10 @@ def get_all_demo_repos() -> List[DemoRepoInfo]:
 
     if needs_setup:
         try:
-            from setup_all_demo_repos import setup_all
-            setup_all(DEMO_REPOS_ROOT)
-        except Exception:
-            pass
+            from setup_all_demo_repos import setup_all_demo_repositories
+            setup_all_demo_repositories()
+        except Exception as e:
+            print(f"Warning: Demo repository auto-initialization error: {e}")
 
     repos: List[DemoRepoInfo] = []
     repo_definitions = [

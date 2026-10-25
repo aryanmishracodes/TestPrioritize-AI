@@ -22,7 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DEMO_REPOS_ROOT = os.path.join(BASE_DIR, "demo_repos")
@@ -1588,14 +1588,15 @@ def should_send_reminder(hours_until_event: int) -> bool:
 # Main Orchestrator
 # ============================================================================
 
-def setup_all_demo_repositories() -> List[Dict[str, Any]]:
+def setup_all_demo_repositories(root_dir: Optional[str] = None) -> List[Dict[str, Any]]:
     """Builds all 4 demo repositories under demo_repos/ and synchronizes demo_repo."""
-    os.makedirs(DEMO_REPOS_ROOT, exist_ok=True)
+    target_root = os.path.abspath(root_dir) if root_dir else DEMO_REPOS_ROOT
+    os.makedirs(target_root, exist_ok=True)
 
-    ecom_dir = os.path.join(DEMO_REPOS_ROOT, "ecommerce")
-    auth_dir = os.path.join(DEMO_REPOS_ROOT, "auth_service")
-    pay_dir = os.path.join(DEMO_REPOS_ROOT, "payment_gateway")
-    book_dir = os.path.join(DEMO_REPOS_ROOT, "booking_platform")
+    ecom_dir = os.path.join(target_root, "ecommerce")
+    auth_dir = os.path.join(target_root, "auth_service")
+    pay_dir = os.path.join(target_root, "payment_gateway")
+    book_dir = os.path.join(target_root, "booking_platform")
 
     print(f"Setting up Ecommerce Demo Repo in: {ecom_dir}")
     r1 = setup_ecommerce_repo(ecom_dir)
@@ -1614,6 +1615,9 @@ def setup_all_demo_repositories() -> List[Dict[str, Any]]:
     setup_ecommerce_repo(LEGACY_DEMO_REPO)
 
     return [r1, r2, r3, r4]
+
+
+setup_all = setup_all_demo_repositories
 
 
 if __name__ == "__main__":
