@@ -1,6 +1,17 @@
 # TestPrioritize AI
 
-> Intelligent, risk-driven test selection and prioritization for CI/CD pipelines.
+> Intelligent, risk-driven, AST-aware test selection and prioritization for CI/CD pipelines.
+
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://testprioritize-ai.streamlit.app)
+[![Tests Passing](https://img.shields.io/badge/Tests-154%2F154%20Passing-brightgreen.svg)](tests/)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+### 🔗 Live Production Links & Finale Deliverables:
+- 🚀 **Live Production Dashboard**: [testprioritize-ai.streamlit.app](https://testprioritize-ai.streamlit.app)
+- 📊 **Interactive HTML Slide Deck**: [`presentation.html`](presentation.html)
+- 🎤 **Grand Finale Pitch & Q&A Guide**: [`PITCH_DECK_GUIDE.md`](PITCH_DECK_GUIDE.md)
+- 📽️ **Native PowerPoint Deck**: [`TestPrioritize_AI_Finale_Pitch.pptx`](TestPrioritize_AI_Finale_Pitch.pptx)
 
 ---
 
