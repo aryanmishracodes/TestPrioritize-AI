@@ -106,6 +106,10 @@ class PipelineResult:
     duration_seconds: float = 0.0
     summary: str = ""
     error_message: Optional[str] = None
+    selection_mode: str = "all"
+    selected_count: int = 0
+    available_candidates_count: int = 0
+    subset_warning: Optional[str] = None
 
 
 def parse_pytest_counts(output: str) -> Dict[str, int]:
@@ -166,12 +170,13 @@ def execute_prioritized_tests(
             error_message="No test paths provided to execute."
         )
 
-    # Validate test paths against repository
+    # Validate test paths against repository (supports test files and pytest node IDs)
     valid_paths: List[str] = []
     for tp in test_paths:
         clean_tp = normalize_path(tp)
-        full_tp = os.path.join(norm_repo, clean_tp)
-        if os.path.isfile(full_tp):
+        file_part = clean_tp.split("::")[0] if "::" in clean_tp else clean_tp
+        full_file = os.path.join(norm_repo, file_part)
+        if os.path.isfile(full_file):
             valid_paths.append(clean_tp)
 
     if not valid_paths:
@@ -263,7 +268,10 @@ def run_pipeline(
     fail_fast: bool = True,
     test_timeout_seconds: float = 60.0,
     test_dir: str = "tests",
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    selection_mode: str = "all",
+    top_n: Optional[int] = None,
+    selected_test_ids: Optional[List[str]] = None
 ) -> PipelineResult:
     """
     Executes the end-to-end TestPrioritize AI workflow:
@@ -271,7 +279,7 @@ def run_pipeline(
     2. Maps changed source files to candidate tests.
     3. Gathers dependency intelligence via TinyFish if enabled and applicable.
     4. Ranks candidate tests with explainable scoring.
-    5. Optionally executes prioritized tests via pytest.
+    5. Optionally executes prioritized tests via pytest (with Top-N or Manual selection).
 
     Args:
         base_ref: Base Git revision (e.g. 'main', 'HEAD~1').
@@ -283,6 +291,9 @@ def run_pipeline(
         test_timeout_seconds: Timeout ceiling for test execution.
         test_dir: Subdirectory containing test files.
         api_key: Optional explicit TinyFish API key.
+        selection_mode: 'all', 'top_n', or 'manual'.
+        top_n: Number of top tests to run if selection_mode is 'top_n'.
+        selected_test_ids: List of test paths/node IDs if selection_mode is 'manual'.
 
     Returns:
         PipelineResult with all pipeline artifacts, timings, and statuses.
@@ -362,6 +373,48 @@ def run_pipeline(
         )
 
     prioritized_test_paths = ranking_result.test_paths
+    total_candidates_count = len(prioritized_test_paths)
+    subset_warning = None
+
+    # Apply selection filtering
+    if selection_mode == "top_n":
+        effective_n = min(max(1, top_n or 1), total_candidates_count)
+        prioritized_test_paths = prioritized_test_paths[:effective_n]
+        subset_warning = f"Top-{len(prioritized_test_paths)} Subset Active: Executing {len(prioritized_test_paths)} of {total_candidates_count} candidate tests. Unselected tests were not executed; this run does not verify the entire application."
+    elif selection_mode == "manual":
+        if not selected_test_ids:
+            duration = time.time() - start_wall_time
+            return PipelineResult(
+                status=STATUS_NO_CANDIDATE_TESTS,
+                changed_files=changed_files,
+                mapping_results=mapping_results,
+                dependency_report=dep_report,
+                ranking_result=ranking_result,
+                duration_seconds=round(duration, 3),
+                summary="Empty test selection. Please select at least one candidate test to execute.",
+                error_message="No tests selected in manual mode.",
+                selection_mode="manual",
+                selected_count=0,
+                available_candidates_count=total_candidates_count
+            )
+        selected_set = set(selected_test_ids)
+        prioritized_test_paths = [t for t in prioritized_test_paths if t in selected_set]
+        if not prioritized_test_paths:
+            duration = time.time() - start_wall_time
+            return PipelineResult(
+                status=STATUS_NO_CANDIDATE_TESTS,
+                changed_files=changed_files,
+                mapping_results=mapping_results,
+                dependency_report=dep_report,
+                ranking_result=ranking_result,
+                duration_seconds=round(duration, 3),
+                summary="None of the selected test IDs match available candidate tests in this repository.",
+                error_message="Selected test IDs not found among candidates.",
+                selection_mode="manual",
+                selected_count=0,
+                available_candidates_count=total_candidates_count
+            )
+        subset_warning = f"Manual Subset Active: Executing {len(prioritized_test_paths)} of {total_candidates_count} candidate tests. Unselected tests were not executed; this run does not verify the entire application."
 
     # Step 5: Safe execution of prioritized tests via pytest
     exec_outcome: Optional[TestExecutionOutcome] = None
@@ -408,5 +461,9 @@ def run_pipeline(
         execution_outcome=exec_outcome,
         duration_seconds=round(duration, 3),
         summary=summary,
-        error_message=exec_outcome.error_message if exec_outcome and exec_outcome.exit_code != 0 else None
+        error_message=exec_outcome.error_message if exec_outcome and exec_outcome.exit_code != 0 else None,
+        selection_mode=selection_mode,
+        selected_count=len(prioritized_test_paths),
+        available_candidates_count=total_candidates_count,
+        subset_warning=subset_warning
     )

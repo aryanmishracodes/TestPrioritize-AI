@@ -31,8 +31,10 @@ from demo_manager import (
     DemoRepoInfo,
     IsolatedRunReport,
     ModeExecutionResult,
+    TestCandidateItem,
     execute_demo_scenario,
     get_all_demo_repos,
+    get_available_test_candidates,
     list_repo_source_files,
 )
 from diff_checker import FileChange
@@ -400,19 +402,10 @@ with st.sidebar:
         active_repo_obj = next(r for r in demo_repos if r.id == selected_repo_id)
         st.caption(active_repo_obj.description)
 
-        # Dynamic source file browser
-        available_src_files = list_repo_source_files(active_repo_obj.path)
-        selected_changed_files = st.multiselect(
-            "Mark Changed Source Files",
-            options=available_src_files,
-            default=[available_src_files[0]] if available_src_files else [],
-            help="Select one or more Python files in src/ to mark as changed for AST dependency analysis."
-        )
-
         # Scenario selector
-        scenarios_options = {"baseline": "Healthy Baseline (All Tests Pass)"}
+        scenarios_options = {"adhoc": "Ad-Hoc / Custom File Selection (Clean Baseline)"}
         for sc in active_repo_obj.scenarios:
-            tag = "Regression" if sc.get("is_regression") else "Proof"
+            tag = "Regression" if sc.get("is_regression") else ("Healthy" if sc.get("id") == "cart_enhancement" else "Proof")
             scenarios_options[sc["id"]] = f"[{tag}] {sc['title']}"
 
         selected_scenario_key = st.selectbox(
@@ -421,7 +414,27 @@ with st.sidebar:
             format_func=lambda k: scenarios_options[k],
             index=1 if len(scenarios_options) > 1 else 0
         )
-        selected_scenario_id = None if selected_scenario_key == "baseline" else selected_scenario_key
+        selected_scenario_id = None if selected_scenario_key == "adhoc" else selected_scenario_key
+
+        # Dynamic source file browser synchronized to selected scenario
+        available_src_files = list_repo_source_files(active_repo_obj.path)
+
+        if selected_scenario_id is not None:
+            active_sc = next((s for s in active_repo_obj.scenarios if s["id"] == selected_scenario_id), None)
+            default_files = active_sc.get("expected_changed_files") if active_sc else ([available_src_files[0]] if available_src_files else [])
+            if active_sc:
+                st.caption(active_sc.get("description", ""))
+        else:
+            default_files = [available_src_files[0]] if available_src_files else []
+            st.caption("Ad-Hoc Mode: Select arbitrary source files in src/ to analyze against clean baseline.")
+
+        selected_changed_files = st.multiselect(
+            "Mark Changed Source Files",
+            options=available_src_files,
+            default=default_files,
+            key=f"changed_files_{selected_repo_id}_{selected_scenario_key}",
+            help="Select one or more Python files in src/ to mark as changed for AST dependency analysis."
+        )
 
         # Execution Mode selector
         mode_options = {
@@ -440,6 +453,113 @@ with st.sidebar:
         custom_base_ref = st.text_input("Base Revision", value="HEAD~1").strip()
         custom_target_ref = st.text_input("Target Revision", value="HEAD").strip()
         execution_mode = "prioritized"
+
+    # ========================================================================
+    # Test Selection Strategy Controls
+    # ========================================================================
+    st.markdown('<hr style="border: none; border-top: 1px solid #1E1E22; margin: 0.85rem 0;">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size: 0.68rem; color: #71717A; text-transform: uppercase; font-weight: 600; margin-bottom: 0.4rem;">Test Selection Strategy</div>', unsafe_allow_html=True)
+
+    available_candidates: List[TestCandidateItem] = []
+    if mode_type == "Demo Repositories (4 Projects)":
+        available_candidates = get_available_test_candidates(
+            repo_id=selected_repo_id,
+            changed_files=selected_changed_files,
+            scenario_id=selected_scenario_id
+        )
+
+    candidate_count = len(available_candidates)
+    scoped_key = f"{selected_repo_id}_{selected_scenario_key}" if mode_type.startswith("Demo") else "custom"
+
+    selection_mode_labels = {
+        "all": f"All Relevant Candidates ({candidate_count})",
+        "top_n": "Top N Ranked Tests",
+        "manual": "Manually Select Tests"
+    }
+
+    user_selection_mode = st.radio(
+        "Candidate Selection Mode",
+        options=["all", "top_n", "manual"],
+        format_func=lambda m: selection_mode_labels[m],
+        index=0,
+        key=f"sel_mode_{scoped_key}",
+        help="Select all candidates, top N ranked candidates, or manually choose individual test cases."
+    )
+
+    user_top_n: Optional[int] = None
+    user_selected_ids: Optional[List[str]] = None
+
+    if user_selection_mode == "top_n":
+        max_n = max(candidate_count, 1)
+        default_n = min(5, max_n)
+        user_top_n = int(st.number_input(
+            f"Top N Tests to Execute (1 - {max_n})",
+            min_value=1,
+            max_value=max_n,
+            value=default_n,
+            step=1,
+            key=f"top_n_val_{scoped_key}"
+        ))
+        st.caption(f"Executes precisely the top {user_top_n} of {candidate_count} ranked test candidates.")
+    elif user_selection_mode == "manual":
+        candidate_options = [c.node_id for c in available_candidates]
+        candidate_map = {c.node_id: c for c in available_candidates}
+        session_sel_key = f"manual_selected_{scoped_key}"
+
+        if session_sel_key not in st.session_state:
+            st.session_state[session_sel_key] = candidate_options[:min(5, len(candidate_options))]
+
+        col_sa, col_cs = st.columns(2)
+        if col_sa.button("Select All", use_container_width=True, key=f"btn_sa_{scoped_key}"):
+            st.session_state[session_sel_key] = list(candidate_options)
+            st.rerun()
+        if col_cs.button("Clear Selection", use_container_width=True, key=f"btn_cs_{scoped_key}"):
+            st.session_state[session_sel_key] = []
+            st.rerun()
+
+        def format_candidate(node_id: str) -> str:
+            item = candidate_map.get(node_id)
+            if item:
+                short_id = node_id.split("::")[-1] if "::" in node_id else node_id
+                return f"[{item.priority} | {item.score} pts] {short_id}"
+            return node_id
+
+        current_defaults = [nid for nid in st.session_state[session_sel_key] if nid in candidate_map]
+        user_selected_ids = st.multiselect(
+            f"Candidate Checklist ({len(current_defaults)}/{candidate_count} selected)",
+            options=candidate_options,
+            default=current_defaults,
+            format_func=format_candidate,
+            key=f"multisel_{scoped_key}"
+        )
+        st.session_state[session_sel_key] = user_selected_ids
+        if not user_selected_ids:
+            st.warning("Empty selection: Please select at least one test candidate before executing.")
+
+    # Execution Plan Preview
+    if user_selection_mode == "top_n":
+        effective_n = user_top_n or 1
+        planned_pri = [c.node_id for c in available_candidates[:effective_n]]
+        planned_std = sorted(list(planned_pri))
+    elif user_selection_mode == "manual":
+        selected_set = set(user_selected_ids or [])
+        planned_pri = [c.node_id for c in available_candidates if c.node_id in selected_set or c.test_file in selected_set]
+        planned_std = sorted(list(planned_pri))
+    else:
+        planned_pri = [c.node_id for c in available_candidates]
+        planned_std = sorted(list(planned_pri))
+
+    with st.expander(f"Execution Plan Preview ({len(planned_pri)}/{candidate_count} tests)", expanded=False):
+        st.markdown(f"**Prioritized Execution Order ({len(planned_pri)} tests):**")
+        for idx, nid in enumerate(planned_pri[:8], 1):
+            st.markdown(f"{idx}. `{nid}`")
+        if len(planned_pri) > 8:
+            st.caption(f"... and {len(planned_pri) - 8} more")
+        st.markdown(f"**Standard Alphabetical Order ({len(planned_std)} tests):**")
+        for idx, nid in enumerate(planned_std[:8], 1):
+            st.markdown(f"{idx}. `{nid}`")
+        if len(planned_std) > 8:
+            st.caption(f"... and {len(planned_std) - 8} more")
 
     st.markdown('<hr style="border: none; border-top: 1px solid #1E1E22; margin: 0.85rem 0;">', unsafe_allow_html=True)
     st.markdown('<div style="font-size: 0.68rem; color: #71717A; text-transform: uppercase; font-weight: 600; margin-bottom: 0.4rem;">Execution Options</div>', unsafe_allow_html=True)
@@ -476,6 +596,7 @@ st.markdown(
 
 last_run_timestamp = st.session_state.get("last_run_timestamp", "No runs executed yet")
 current_repo_title = selected_repo_id if mode_type.startswith("Demo") else custom_repo_path
+selection_summary = f"{user_selection_mode.upper()} ({len(planned_pri)}/{candidate_count})"
 
 st.markdown(f"""
 <div class="context-bar">
@@ -490,6 +611,10 @@ st.markdown(f"""
     <div class="context-item">
         <span class="context-label">Mode:</span>
         <span class="context-value">{html.escape(execution_mode.upper())}</span>
+    </div>
+    <div class="context-item">
+        <span class="context-label">Selection:</span>
+        <span class="context-value">{html.escape(selection_summary)}</span>
     </div>
     <div class="context-item">
         <span class="context-label">Last Run:</span>
@@ -507,6 +632,8 @@ if run_button_clicked:
     if mode_type == "Demo Repositories (4 Projects)":
         if not selected_changed_files:
             st.error("Please select at least one source file to mark as changed.")
+        elif user_selection_mode == "manual" and not user_selected_ids:
+            st.error("Empty test selection. Please select at least one test candidate to execute.")
         else:
             with st.spinner("Analyzing AST dependencies, ranking candidate tests, and executing isolated test suites..."):
                 t_exec_start = time.perf_counter()
@@ -517,7 +644,10 @@ if run_button_clicked:
                         scenario_id=selected_scenario_id,
                         mode=execution_mode,
                         fail_fast=fail_fast_toggle,
-                        timeout_seconds=float(timeout_slider)
+                        timeout_seconds=float(timeout_slider),
+                        selection_mode=user_selection_mode,
+                        top_n=user_top_n if user_selection_mode == "top_n" else None,
+                        selected_test_ids=user_selected_ids if user_selection_mode == "manual" else None
                     )
                     st.session_state["demo_report"] = report
                     st.session_state["last_run_timestamp"] = time.strftime("%H:%M:%S UTC")
@@ -525,22 +655,28 @@ if run_button_clicked:
                 except Exception as exc:
                     st.error(f"Execution Error: {exc}")
     else:
-        with st.spinner("Running custom git pipeline..."):
-            try:
-                res = run_pipeline(
-                    base_ref=custom_base_ref,
-                    target_ref=custom_target_ref,
-                    repo_path=custom_repo_path,
-                    enable_tinyfish=tinyfish_toggle,
-                    execute_tests=True,
-                    fail_fast=fail_fast_toggle,
-                    test_timeout_seconds=float(timeout_slider)
-                )
-                st.session_state["custom_result"] = res
-                st.session_state["last_run_timestamp"] = time.strftime("%H:%M:%S UTC")
-                st.session_state["demo_report"] = None
-            except Exception as exc:
-                st.error(f"Custom Pipeline Error: {exc}")
+        if user_selection_mode == "manual" and not user_selected_ids:
+            st.error("Empty test selection. Please select at least one test candidate to execute.")
+        else:
+            with st.spinner("Running custom git pipeline..."):
+                try:
+                    res = run_pipeline(
+                        base_ref=custom_base_ref,
+                        target_ref=custom_target_ref,
+                        repo_path=custom_repo_path,
+                        enable_tinyfish=tinyfish_toggle,
+                        execute_tests=True,
+                        fail_fast=fail_fast_toggle,
+                        test_timeout_seconds=float(timeout_slider),
+                        selection_mode=user_selection_mode,
+                        top_n=user_top_n if user_selection_mode == "top_n" else None,
+                        selected_test_ids=user_selected_ids if user_selection_mode == "manual" else None
+                    )
+                    st.session_state["custom_result"] = res
+                    st.session_state["last_run_timestamp"] = time.strftime("%H:%M:%S UTC")
+                    st.session_state["demo_report"] = None
+                except Exception as exc:
+                    st.error(f"Custom Pipeline Error: {exc}")
 
 
 # ============================================================================
@@ -550,6 +686,14 @@ if run_button_clicked:
 demo_report: Optional[IsolatedRunReport] = st.session_state.get("demo_report")
 
 if demo_report is not None:
+    # 0. Test Selection Subset Notice (if executing a subset)
+    if demo_report.subset_warning:
+        st.markdown(f"""
+        <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; color: #FBBF24; font-size: 0.8rem; line-height: 1.4;">
+            <strong>Test Subset Active ({demo_report.selected_count} of {demo_report.available_candidates_count} candidates):</strong> {html.escape(demo_report.subset_warning)}
+        </div>
+        """, unsafe_allow_html=True)
+
     # 1. Benchmark & Fail-Fast Summary Banner
     if demo_report.mode == "benchmark" and demo_report.standard_run and demo_report.prioritized_run:
         if demo_report.tests_moved_ahead and demo_report.tests_moved_ahead > 0:

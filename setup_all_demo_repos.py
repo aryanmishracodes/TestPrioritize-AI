@@ -464,8 +464,74 @@ def apply_coupon(cart_total: float, coupon_code: str) -> float:
         return round(cart_total * 0.50, 2)
     return round(float(cart_total), 2)
 """)
-    run_git(["add", "src/cart.py"], cwd=target_dir)
-    run_git(["commit", "-m", "feat(cart): expand max cart items cap to 60"], cwd=target_dir)
+    cart_test_enhancement = '''import pytest
+from src.cart import calculate_cart_total, apply_coupon
+
+
+def test_calculate_cart_total_empty():
+    assert calculate_cart_total([]) == 0.0
+
+
+def test_calculate_cart_total_single_item():
+    items = [{"price": 25.50, "quantity": 1}]
+    assert calculate_cart_total(items) == 25.50
+
+
+def test_calculate_cart_total_multiple_quantities():
+    items = [
+        {"price": 10.0, "quantity": 2},
+        {"price": 5.50, "quantity": 3}
+    ]
+    assert calculate_cart_total(items) == 36.50
+
+
+def test_calculate_cart_total_default_quantity():
+    items = [{"price": 15.0}]
+    assert calculate_cart_total(items) == 15.0
+
+
+def test_calculate_cart_total_invalid_type():
+    with pytest.raises(TypeError):
+        calculate_cart_total("invalid")
+
+
+def test_calculate_cart_total_missing_price():
+    with pytest.raises(ValueError):
+        calculate_cart_total([{"qty": 1}])
+
+
+def test_calculate_cart_total_exceeds_max_limit():
+    # In enhanced cart, limit is 60 items, so 61 items exceeds the limit
+    items = [{"price": 1.0}] * 61
+    with pytest.raises(ValueError, match="maximum allowed limit"):
+        calculate_cart_total(items)
+
+
+def test_calculate_cart_total_at_expanded_limit_passes():
+    # 60 items is within the new expanded capacity
+    items = [{"price": 1.0}] * 60
+    assert calculate_cart_total(items) == 60.0
+
+
+def test_apply_coupon_save10():
+    assert apply_coupon(100.0, "SAVE10") == 90.0
+
+
+def test_apply_coupon_save20():
+    assert apply_coupon(50.0, "SAVE20") == 40.0
+
+
+def test_apply_coupon_halfprice():
+    assert apply_coupon(80.0, "HALFPRICE") == 40.0
+
+
+def test_apply_coupon_negative_total():
+    with pytest.raises(ValueError):
+        apply_coupon(-10.0, "SAVE10")
+'''
+    write_file(target_dir, "tests/test_cart.py", cart_test_enhancement)
+    run_git(["add", "src/cart.py", "tests/test_cart.py"], cwd=target_dir)
+    run_git(["commit", "-m", "feat(cart): expand max cart items cap to 60 with matching tests"], cwd=target_dir)
     cart_commit = run_git(["rev-parse", "HEAD"], cwd=target_dir)
     run_git(["tag", "cart-enhancement"], cwd=target_dir)
 
@@ -514,6 +580,62 @@ def validate_shipping_address(addr: Dict[str, Any]) -> bool:
     checkout_bug_commit = run_git(["rev-parse", "HEAD"], cwd=target_dir)
     run_git(["tag", "checkout-regression"], cwd=target_dir)
 
+    # Branch 3: regression/cart-limit-bug
+    run_git(["checkout", "main"], cwd=target_dir)
+    run_git(["checkout", "-b", "regression/cart-limit-bug"], cwd=target_dir)
+    cart_limit_regression_code = '''"""
+src/cart.py — Shopping Cart Module (WITH INTENTIONAL LIMIT REGRESSION)
+"""
+from typing import List, Dict, Any
+
+MAX_CART_ITEMS = 50
+
+
+def calculate_cart_total(items: List[Dict[str, Any]]) -> float:
+    """Calculates total price from cart items list."""
+    if not isinstance(items, list):
+        raise TypeError("Items must be a list")
+    # INTENTIONAL REGRESSION BUG: Erroneously checks > 1000 instead of MAX_CART_ITEMS (50)
+    # Fails to enforce the 50-item limit, allowing oversized carts to pass!
+    if len(items) > 1000:
+        raise ValueError(f"Cart exceeds maximum allowed limit of {MAX_CART_ITEMS} items")
+    total = 0.0
+    for item in items:
+        if not isinstance(item, dict):
+            raise TypeError("Item must be a dictionary")
+        if "price" not in item:
+            raise ValueError("Item missing required 'price' key")
+        price = item["price"]
+        qty = item.get("quantity", 1)
+        if not isinstance(price, (int, float)) or not isinstance(qty, int):
+            raise TypeError("Price and quantity must be numeric")
+        if price < 0 or qty < 0:
+            raise ValueError("Price and quantity must be non-negative")
+        total += float(price * qty)
+    return round(total, 2)
+
+
+def apply_coupon(cart_total: float, coupon_code: str) -> float:
+    """Applies valid discount coupon to cart total."""
+    if not isinstance(cart_total, (int, float)):
+        raise TypeError("Cart total must be numeric")
+    if cart_total < 0:
+        raise ValueError("Cart total cannot be negative")
+    code = (coupon_code or "").strip().upper()
+    if code == "SAVE10":
+        return round(cart_total * 0.90, 2)
+    elif code == "SAVE20":
+        return round(cart_total * 0.80, 2)
+    elif code == "HALFPRICE":
+        return round(cart_total * 0.50, 2)
+    return round(float(cart_total), 2)
+'''
+    write_file(target_dir, "src/cart.py", cart_limit_regression_code)
+    run_git(["add", "src/cart.py"], cwd=target_dir)
+    run_git(["commit", "-m", "fix(cart): update items check logic (introduces limit regression)"], cwd=target_dir)
+    cart_limit_commit = run_git(["rev-parse", "HEAD"], cwd=target_dir)
+    run_git(["tag", "cart-limit-regression"], cwd=target_dir)
+
     # Reset back to main
     run_git(["checkout", "main"], cwd=target_dir)
 
@@ -521,7 +643,7 @@ def validate_shipping_address(addr: Dict[str, Any]) -> bool:
         {
             "id": "cart_enhancement",
             "title": "Scenario 1: Cart Enhancement (Healthy PR)",
-            "description": "Increases cart items limit to 60. Validates 100% pass rate with tests/test_cart.py prioritized.",
+            "description": "Increases cart items limit to 60. Validates 100% pass rate across entire suite.",
             "base_ref": "base",
             "target_ref": "cart-enhancement",
             "base_commit": base_commit,
@@ -530,7 +652,7 @@ def validate_shipping_address(addr: Dict[str, Any]) -> bool:
             "expected_changed_files": ["src/cart.py"],
             "expected_top_test": "tests/test_cart.py",
             "expected_pass_rate": 1.0,
-            "notes": "Healthy feature PR."
+            "notes": "Verified 100% healthy feature PR; all tests pass."
         },
         {
             "id": "checkout_regression",
@@ -551,11 +673,32 @@ def validate_shipping_address(addr: Dict[str, Any]) -> bool:
                 "expected_outcome": "11.39",
                 "observed_outcome": "11.0"
             },
-            "notes": "Authentic failing regression."
+            "notes": "Authentic failing regression in checkout domain."
+        },
+        {
+            "id": "cart_limit_regression",
+            "title": "Scenario 3: Cart Capacity Limit Bug (Failing Cart Bug)",
+            "description": "Lenient condition in calculate_cart_total bypasses 50-item limit. Prioritizes test_cart.py directly to catch failure immediately.",
+            "base_ref": "base",
+            "target_ref": "cart-limit-regression",
+            "base_commit": base_commit,
+            "target_commit": cart_limit_commit,
+            "is_regression": True,
+            "expected_changed_files": ["src/cart.py"],
+            "expected_top_test": "tests/test_cart.py",
+            "detecting_test": "tests/test_cart.py::test_calculate_cart_total_exceeds_max_limit",
+            "regression_details": {
+                "intended_behavior": "calculate_cart_total with 51 items raises ValueError(maximum allowed limit of 50 items)",
+                "introduced_regression": "Condition checked len(items) > 1000, failing to reject oversized carts",
+                "detecting_test": "tests/test_cart.py::test_calculate_cart_total_exceeds_max_limit",
+                "expected_outcome": "ValueError",
+                "observed_outcome": "No Exception (Silent Pass)"
+            },
+            "notes": "Authentic failing regression in cart domain."
         },
         {
             "id": "checkout_cart_dependency",
-            "title": "Scenario 3: Checkout -> Cart AST Dependency Proof",
+            "title": "Scenario 4: Checkout -> Cart AST Dependency Proof",
             "description": "src/checkout.py imports src/cart.py. Modifying checkout maps both test_checkout.py (direct) and test_cart.py (upstream dependency).",
             "base_ref": "base",
             "target_ref": "checkout-regression",
